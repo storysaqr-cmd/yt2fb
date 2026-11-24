@@ -1,0 +1,10 @@
+{
+  "youtube_channel_id": "UCzDdfYFhFN-mjRtsJvkHYbQ",
+  "page_id": "1448230888369030",
+  "delay_minutes": 0,
+  "templates": [
+    "فيديو جديد على القناة: {title}",
+    "نزل دلوقتي: {title} . قولي رأيك في التعليقات",
+    "لو لسه ما شفتش: {title}"
+  ]
+}
