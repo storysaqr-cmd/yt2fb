@@ -1,0 +1,25 @@
+name: yt2fb
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: run
+        env:
+          FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
+        run: python yt2fb.py run
+      - name: save state
+        run: |
+          git config user.name "yt2fb"
+          git config user.email "yt2fb@users.noreply.github.com"
+          git add state.json
+          git diff --cached --quiet || (git commit -m "state" && git push)
