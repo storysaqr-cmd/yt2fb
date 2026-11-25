@@ -1,12 +1,13 @@
-[٢٥‏/١١، ٣:٣٠ م] Instinct: #!/usr/bin/env python3
+[٢٥‏/١١، ٤:٠٩ م] Instinct: #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # fb_comments.py - رد تلقائي على تعليقات صفحة فيسبوك
 #
-# الوضع الافتراضي "معاينة" (preview): مبيبعتش أي رد خالص، بس بيكتب
-# الردود المقترحة في ملف PREVIEWS.md عشان تشوفها وتوافق عليها الأول.
+# الوضع الافتراضي "فعلي" (live): بيرد على التعليقات البسيطة تلقائياً.
+# الإيقاف المؤقت (معاينة بدون إرسال): أنشئ ملف comments_config.json وحط فيه:
+#   {"mode": "preview"}
 #
-# التفعيل الفعلي: أنشئ ملف comments_config.json في المستودع وحط فيه:
-#   {"mode": "live"}
+# التعليقات المتخطاة (أسئلة، شكاوى، روابط، تعليقات طويلة) بتتسجل في
+# ملف SKIPPED.md عشان صاحب الصفحة يرد عليها بنفسه.
 #
 # قواعد الرد:
 # - بنرد بس على التعليقات اللي ينفع معاها شكر أو دعاء (مدح، شكر، دعاء، تحية).
@@ -35,6 +36,7 @@ STATE_FILE = "comments_state.json"
 CONFIG_FILE = "config.json"          # فيه page_id (نفس ملف yt2fb)
 MODE_FILE = "comments_config.json"   # اختياري: {"mode": "live"}
 PREVIEW_FILE = "PREVIEWS.md"
+SKIPPED_FILE = "SKIPPED.md"
 CAIRO = ZoneInfo("Africa/Cairo")
 
 MAX_REPLIES_PER_RUN = 10   # أقصى عدد ردود فعلية في المرة الواحدة
@@ -109,7 +111,7 @@ def api_get(path, params):
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         explain_error(e.read().decode("utf-8", "replace"))
-[٢٥‏/١١، ٣:٣٠ م] Instinct: def api_post(path, params):
+[٢٥‏/١١، ٤:٠٩ م] Instinct: def api_post(path, params):
     params = dict(params)
     params["access_token"] = TOKEN
     data = urllib.parse.urlencode(params).encode("utf-8")
@@ -141,11 +143,11 @@ def load_mode():
     if os.path.exists(MODE_FILE):
         try:
             mode = json.load(open(MODE_FILE, encoding="utf-8")).get("mode", "")
-            if mode == "live":
-                return "live"
+            if mode == "preview":
+                return "preview"
         except Exception:
             pass
-    return "preview"
+    return "live"
 
 
 def first_name(full):
@@ -222,7 +224,7 @@ def main():
     replied_commenters = set(state.get("replied_commenters", []))
     candidates = []
     max_seen = checkpoint
-[٢٥‏/١١، ٣:٣٠ م] Instinct: for post in data.get("data", []):
+[٢٥‏/١١، ٤:٠٩ م] Instinct: for post in data.get("data", []):
         post_id = post["id"]
         for c in post.get("comments", {}).get("data", []):
             try:
@@ -250,7 +252,7 @@ def main():
 
     candidates.sort(key=lambda x: x[0])  # الأقدم الأول
     state["last_comment_check"] = max_seen
-[٢٥‏/١١، ٣:٣٠ م] Instinct: if mode == "preview":
+[٢٥‏/١١، ٤:٠٩ م] Instinct: if mode == "preview":
         lines = []
         lines.append("# معاينة الردود التلقائية - لم يتم إرسال أي رد")
         lines.append("")
@@ -273,6 +275,74 @@ def main():
                     lines.append("⏭️ **%s**: \"%s\"" % (name, text[:80]))
                     lines.append("   - اتخطّى: %s." % reason)
                     lines.append("")
+                continue
+            if shown < MAX_PREVIEWS:
+                reply = pick_reply(family, cid, name)
+                lines.append("💬 **%s**: \"%s\"" % (name, text[:80]))
+                lines.append("   - الرد المقترح: \"%s\"" % reply)
+                lines.append("")
+            shown += 1
+        if not candidates:
+            lines.append("مفيش تعليقات جديدة من آخر فحص.")
+        else:
+            lines.append("---")
+            lines.append("الإجمالي: %d تعليق جديد - %d ليهم رد مقترح، %d اتخطّوا." % (len(candidates), shown, skipped))
+            lines.append("")
+            lines.append("لو الردود عجبتك، البرنامج يبدأ يبعت فعلاً بعد ما تنشئ ملف comments_config.json وفيه {\"mode\": \"live\"}.")
+        # اكتب الملف بس لو فيه جديد أو الملف مش موجود (عشان منعملش حفظ فاضي كل 15 دقيقة)
+        if candidates or not os.path.exists(PREVIEW_FILE):
+            with open(PREVIEW_FILE, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            print("معاينة: تم كتابة %d رد مقترح في %s (لم يتم إرسال أي رد)." % (shown, PREVIEW_FILE))
+        else:
+            print("معاينة: مفيش تعليقات جديدة، الملف زي ما هو.")
+    else:
+        done = 0
+        skipped_entries = []
+        for ts, post_id, cid, commenter, name, text in candidates:
+            family, reason = classify(text)
+            if family is None:
+                skipped_entries.append((name, text, reason))
+                continue
+            if done >= MAX_REPLIES_PER_RUN:
+                break
+            key = post_id + "_" + commenter
+            if key in replied_commenters:
+                continue
+            api_post("/" + cid + "/comments", {"message": pick_reply(family, cid, name)})
+            replied_ids.add(cid)
+            replied_commenters.add(key)
+            done += 1
+            time.sleep(2)
+        if skipped_entries:
+            lines = []
+            lines.append("# تعليقات محتاجة رد منك بنفسك")
+            lines.append("")
+            lines.append("آخر فحص: %s بتوقيت القاهرة" % datetime.now(CAIRO).strftime("%Y-%m-%d %I:%M %p"))
+            lines.append("")
+            lines.append("البرنامج بيرد لوحده على التعليقات البسيطة (مدح، شكر، دعاء، تحية)،")
+            lines.append("وبيتخطى الأسئلة والشكاوى والروابط والتعليقات الطويلة عشان ترد عليها بنفسك:")
+            lines.append("")
+            for name, text, reason in skipped_entries[:20]:
+                lines.append("- **%s**: \"%s\"" % (name, text[:100]))
+                lines.append("  - السبب: %s" % reason)
+            lines.append("")
+            with open(SKIPPED_FILE, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        if done:
+            print("تم الرد على %d تعليق جديد ✅" % done)
+        else:
+            print("مفيش تعليقات جديدة مناسبة للرد في الفحص ده.")
+        if skipped_entries:
+[٢٥‏/١١، ٤:٠٩ م] Instinct: print("اتخطّى %d تعليق محتاجين رد منك بنفسك (مسجلين في %s)." % (len(skipped_entries), SKIPPED_FILE))
+
+    state["replied_ids"] = list(replied_ids)[-MAX_STORED:]
+    state["replied_commenters"] = list(replied_commenters)[-MAX_STORED:]
+    save_state(state)
+
+
+if __name__ == "__main__":
+    main()
                 continue
             if shown < MAX_PREVIEWS:
                 reply = pick_reply(family, cid, name)
