@@ -1,0 +1,142 @@
+name: reel-publish
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+
+jobs:
+  publish:
+    if: >
+      github.event.issue.state == 'open' &&
+      startsWith(github.event.issue.title, 'ريل مقترح:') &&
+      github.event.comment.user.login == github.event.repository.owner.login &&
+      startsWith(github.event.comment.body, 'انشر')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: publish reel to facebook
+        env:
+          FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          cat > /tmp/reel.py <<'PYEOF'
+          import json, os, re, sys, time, urllib.request, urllib.parse, urllib.error
+
+          GRAPH = "https://graph.facebook.com/v21.0"
+
+          def comment(body):
+              try:
+                  req = urllib.request.Request(
+                      "https://api.github.com/repos/%s/issues/%s/comments" % (os.environ["REPO"], os.environ["ISSUE_NUMBER"]),
+                      data=json.dumps({"body": body}).encode(), method="POST",
+                      headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                               "Accept": "application/vnd.github+json", "User-Agent": "ghazwat-reel-bot"})
+                  urllib.request.urlopen(req, timeout=30).read()
+              except Exception as e:
+                  print("comment failed:", e)
+
+          def close_issue():
+              try:
+                  req = urllib.request.Request(
+                      "https://api.github.com/repos/%s/issues/%s" % (os.environ["REPO"], os.environ["ISSUE_NUMBER"]),
+                      data=json.dumps({"state": "closed"}).encode(), method="PATCH",
+                      headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                               "Accept": "application/vnd.github+json", "User-Agent": "ghazwat-reel-bot"})
+                  urllib.request.urlopen(req, timeout=30).read()
+              except Exception as e:
+                  print("close failed:", e)
+
+          def fail(msg):
+              comment("فشل نشر الريل: " + msg)
+              print("FAIL:", msg)
+              sys.exit(1)
+
+          def gpost(url, fields):
+              req = urllib.request.Request(url, data=urllib.parse.urlencode(fields).encode(), method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      return json.load(r)
+              except urllib.error.HTTPError as e:
+                  fail("facebook error: " + e.read().decode("utf-8", "ignore")[:500])
+
+          def gget(url):
+              req = urllib.request.Request(url)
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.load(r)
+
+          cfg = json.load(open("config.json"))
+          page_id = cfg["page_id"]
+          token = os.environ["FB_PAGE_TOKEN"]
+          body = os.environ["ISSUE_BODY"]
+
+          m = re.search(r"```json\s*(\{.*\})\s*```", body, re.S)
+          if not m:
+              fail("مفيش بيانات الريل في الإيشو (JSON block missing)")
+          try:
+              draft = json.loads(m.group(1))
+          except Exception as e:
+              fail("بيانات الريل مش سليمة: %s" % e)
+          desc = (draft.get("description") or "").strip()
+          vurl = (draft.get("video_url") or "").strip()
+          if not desc:
+              fail("وصف الريل فاضي")
+          if not vurl.startswith("http"):
+              fail("لينك الفيديو مش سليم")
+
+          r1 = gpost("%s/%s/video_reels" % (GRAPH, page_id),
+                     {"upload_phase": "start", "access_token": token})
+          vid = r1.get("video_id")
+          up = r1.get("upload_url")
+          if not vid or not up:
+              fail("رد غير متوقع من فيسبوك في خطوة البداية: %s" % r1)
+          print("START ok, video_id:", vid)
+
+          req = urllib.request.Request(up, data=b"", method="POST",
+              headers={"Authorization": "OAuth " + token, "file_url": vurl})
+          try:
+              with urllib.request.urlopen(req, timeout=300) as r:
+                  print("UPLOAD:", json.load(r))
+          except urllib.error.HTTPError as e:
+              fail("فشل رفع الفيديو: " + e.read().decode("utf-8", "ignore")[:500])
+
+          for i in range(12):
+              try:
+                  st = gget("%s/%s?fields=status&access_token=%s" % (GRAPH, vid, urllib.parse.quote(token))).get("status", {})
+                  vs = st.get("video_status", "")
+                  print("STATUS:", vs)
+                  if vs in ("ready", "upload_complete"):
+                      break
+                  if vs in ("upload_failed", "error", "expired"):
+                      fail("فيسبوك رفض الفيديو: %s" % json.dumps(st, ensure_ascii=False)[:400])
+              except SystemExit:
+                  raise
+              except Exception as e:
+                  print("status check error:", e)
+              time.sleep(10)
+
+          r3 = gpost("%s/%s/video_reels" % (GRAPH, page_id),
+                     {"upload_phase": "finish", "video_id": vid, "video_state": "PUBLISHED",
+                      "description": desc, "access_token": token})
+          print("FINISH:", r3)
+
+          link = ""
+          for i in range(3):
+              try:
+                  link = gget("%s/%s?fields=permalink_url&access_token=%s" % (GRAPH, vid, urllib.parse.quote(token))).get("permalink_url", "") or ""
+                  if link:
+                      break
+              except Exception as e:
+                  print("permalink error:", e)
+              time.sleep(10)
+
+          comment("تم نشر الريل على الصفحة ✅\nرقم الفيديو: %s%s" % (vid, ("\nاللينك: " + link) if link else ""))
+          close_issue()
+          print("PUBLISHED:", vid, link)
+          PYEOF
+          python3 /tmp/reel.py
