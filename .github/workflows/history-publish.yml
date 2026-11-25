@@ -1,0 +1,152 @@
+name: history-publish
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+
+jobs:
+  publish:
+    if: >
+      github.event.issue.state == 'open' &&
+      startsWith(github.event.issue.title, 'بوست مقترح:') &&
+      github.event.comment.user.login == github.event.repository.owner.login &&
+      startsWith(github.event.comment.body, 'انشر')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: publish to facebook
+        env:
+          FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          cat > /tmp/pub.py <<'PYEOF'
+          import json, os, re, sys, urllib.request, urllib.parse, urllib.error, uuid
+
+          UA = {"User-Agent": "ghazwat-history-bot/1.0"}
+          GRAPH = "https://graph.facebook.com/v21.0"
+
+          def comment(body):
+              try:
+                  req = urllib.request.Request(
+                      "https://api.github.com/repos/%s/issues/%s/comments" % (os.environ["REPO"], os.environ["ISSUE_NUMBER"]),
+                      data=json.dumps({"body": body}).encode(), method="POST",
+                      headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                               "Accept": "application/vnd.github+json", "User-Agent": "ghazwat-history-bot"})
+                  urllib.request.urlopen(req, timeout=30).read()
+              except Exception as e:
+                  print("comment failed:", e)
+
+          def close_issue():
+              try:
+                  req = urllib.request.Request(
+                      "https://api.github.com/repos/%s/issues/%s" % (os.environ["REPO"], os.environ["ISSUE_NUMBER"]),
+                      data=json.dumps({"state": "closed"}).encode(), method="PATCH",
+                      headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                               "Accept": "application/vnd.github+json", "User-Agent": "ghazwat-history-bot"})
+                  urllib.request.urlopen(req, timeout=30).read()
+              except Exception as e:
+                  print("close failed:", e)
+
+          def fail(msg):
+              comment("فشل النشر: " + msg)
+              print("FAIL:", msg)
+              sys.exit(1)
+
+          def resolve_image_url(url):
+              if "drive.google.com" in url:
+                  m = re.search(r"/d/([\w-]+)", url) or re.search(r"[?&]id=([\w-]+)", url)
+                  if m:
+                      return "https://drive.google.com/uc?export=download&id=" + m.group(1)
+              return url.split("?utm_")[0]
+
+          def download(url):
+              req = urllib.request.Request(resolve_image_url(url), headers=UA)
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  data = r.read()
+                  ctype = r.headers.get("Content-Type", "")
+              if len(data) > 10 * 1024 * 1024:
+                  raise ValueError("الصورة أكبر من 10 ميجا")
+              if not ctype.startswith("image/"):
+                  raise ValueError("الرابط مش صورة: " + ctype)
+              ext = ".png" if "png" in ctype else ".jpg"
+              return data, ext, ctype.split(";")[0]
+
+          def multipart_post(url, fields, file_field, filename, filedata, ctype):
+              boundary = uuid.uuid4().hex
+              parts = []
+              for k, v in fields.items():
+                  parts.append(("--" + boundary + "\r\nContent-Disposition: form-data; "
+                                'name="%s"\r\n\r\n%s\r\n' % (k, v)).encode("utf-8"))
+              parts.append(("--" + boundary + "\r\nContent-Disposition: form-data; "
+                            'name="%s"; filename="%s"\r\nContent-Type: %s\r\n\r\n'
+                            % (file_field, filename, ctype)).encode("utf-8"))
+              parts.append(filedata)
+              parts.append(("\r\n--" + boundary + "--\r\n").encode())
+              req = urllib.request.Request(url, data=b"".join(parts), method="POST",
+                  headers={"Content-Type": "multipart/form-data; boundary=" + boundary})
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      return json.load(r)
+              except urllib.error.HTTPError as e:
+                  fail("facebook error: " + e.read().decode("utf-8", "ignore")[:500])
+
+          cfg = json.load(open("config.json"))
+          page_id = cfg["page_id"]
+          token = os.environ["FB_PAGE_TOKEN"]
+          body = os.environ["ISSUE_BODY"]
+          cmt = os.environ["COMMENT_BODY"]
+
+          m = re.search(r"```json\s*(\{.*\})\s*```", body, re.S)
+          if not m:
+              fail("مفيش بيانات البوست في الإيشو (JSON block missing)")
+          try:
+              draft = json.loads(m.group(1))
+          except Exception as e:
+              fail("بيانات البوست مش سليمة: %s" % e)
+          text = (draft.get("text") or "").strip()
+          img = (draft.get("image_url") or "").strip()
+          src = (draft.get("source_url") or "").strip()
+          if not text:
+              fail("نص البوست فاضي")
+
+          no_image = cmt.strip().startswith("انشر بدون صورة")
+          for line in cmt.splitlines():
+              line = line.strip()
+              if line.startswith("صورة:"):
+                  cand = line.split(":", 1)[1].strip()
+                  if cand.startswith("http"):
+                      img = cand
+
+          if img and not no_image:
+              try:
+                  data, ext, ctype = download(img)
+              except Exception as e:
+                  fail("مقدرتش أنزّل الصورة: %s" % e)
+              res = multipart_post("%s/%s/photos" % (GRAPH, page_id),
+                                   {"caption": text, "access_token": token},
+                                   "source", "img" + ext, data, ctype)
+          else:
+              fields = {"message": text, "access_token": token}
+              if src:
+                  fields["link"] = src
+              req = urllib.request.Request("%s/%s/feed" % (GRAPH, page_id),
+                  data=urllib.parse.urlencode(fields).encode(), method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      res = json.load(r)
+              except urllib.error.HTTPError as e:
+                  fail("facebook error: " + e.read().decode("utf-8", "ignore")[:500])
+
+          pid = res.get("id") or res.get("post_id") or "?"
+          comment("تم النشر على الصفحة ✅\nرقم البوست: " + str(pid))
+          close_issue()
+          print("PUBLISHED:", pid)
+          PYEOF
+          python3 /tmp/pub.py
