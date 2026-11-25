@@ -1,4 +1,4 @@
-[٢٥‏/١١، ٤:٠٩ م] Instinct: #!/usr/bin/env python3
+
 # -*- coding: utf-8 -*-
 # fb_comments.py - رد تلقائي على تعليقات صفحة فيسبوك
 #
