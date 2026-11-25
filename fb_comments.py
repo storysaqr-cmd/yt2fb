@@ -1,4 +1,4 @@
-
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # fb_comments.py - رد تلقائي على تعليقات صفحة فيسبوك
 #
@@ -111,7 +111,9 @@ def api_get(path, params):
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         explain_error(e.read().decode("utf-8", "replace"))
-[٢٥‏/١١، ٤:٠٩ م] Instinct: def api_post(path, params):
+
+
+def api_post(path, params):
     params = dict(params)
     params["access_token"] = TOKEN
     data = urllib.parse.urlencode(params).encode("utf-8")
@@ -224,7 +226,8 @@ def main():
     replied_commenters = set(state.get("replied_commenters", []))
     candidates = []
     max_seen = checkpoint
-[٢٥‏/١١، ٤:٠٩ م] Instinct: for post in data.get("data", []):
+
+    for post in data.get("data", []):
         post_id = post["id"]
         for c in post.get("comments", {}).get("data", []):
             try:
@@ -252,7 +255,8 @@ def main():
 
     candidates.sort(key=lambda x: x[0])  # الأقدم الأول
     state["last_comment_check"] = max_seen
-[٢٥‏/١١، ٤:٠٩ م] Instinct: if mode == "preview":
+
+    if mode == "preview":
         lines = []
         lines.append("# معاينة الردود التلقائية - لم يتم إرسال أي رد")
         lines.append("")
@@ -334,56 +338,7 @@ def main():
         else:
             print("مفيش تعليقات جديدة مناسبة للرد في الفحص ده.")
         if skipped_entries:
-[٢٥‏/١١، ٤:٠٩ م] Instinct: print("اتخطّى %d تعليق محتاجين رد منك بنفسك (مسجلين في %s)." % (len(skipped_entries), SKIPPED_FILE))
-
-    state["replied_ids"] = list(replied_ids)[-MAX_STORED:]
-    state["replied_commenters"] = list(replied_commenters)[-MAX_STORED:]
-    save_state(state)
-
-
-if __name__ == "__main__":
-    main()
-                continue
-            if shown < MAX_PREVIEWS:
-                reply = pick_reply(family, cid, name)
-                lines.append("💬 **%s**: \"%s\"" % (name, text[:80]))
-                lines.append("   - الرد المقترح: \"%s\"" % reply)
-                lines.append("")
-            shown += 1
-        if not candidates:
-            lines.append("مفيش تعليقات جديدة من آخر فحص.")
-        else:
-            lines.append("---")
-            lines.append("الإجمالي: %d تعليق جديد - %d ليهم رد مقترح، %d اتخطّوا." % (len(candidates), shown, skipped))
-            lines.append("")
-            lines.append("لو الردود عجبتك، البرنامج يبدأ يبعت فعلاً بعد ما تنشئ ملف comments_config.json وفيه {\"mode\": \"live\"}.")
-        # اكتب الملف بس لو فيه جديد أو الملف مش موجود (عشان منعملش حفظ فاضي كل 15 دقيقة)
-        if candidates or not os.path.exists(PREVIEW_FILE):
-            with open(PREVIEW_FILE, "w", encoding="utf-8") as f:
-                f.write("\n".join(lines) + "\n")
-            print("معاينة: تم كتابة %d رد مقترح في %s (لم يتم إرسال أي رد)." % (shown, PREVIEW_FILE))
-        else:
-            print("معاينة: مفيش تعليقات جديدة، الملف زي ما هو.")
-    else:
-        done = 0
-        for ts, post_id, cid, commenter, name, text in candidates:
-            if done >= MAX_REPLIES_PER_RUN:
-                break
-            family, reason = classify(text)
-            if family is None:
-                continue
-            key = post_id + "_" + commenter
-            if key in replied_commenters:
-                continue
-            api_post("/" + cid + "/comments", {"message": pick_reply(family, cid, name)})
-            replied_ids.add(cid)
-            replied_commenters.add(key)
-            done += 1
-            time.sleep(2)
-        if done:
-            print("تم الرد على %d تعليق جديد ✅" % done)
-        else:
-            print("مفيش تعليقات جديدة مناسبة للرد في الفحص ده.")
+            print("اتخطّى %d تعليق محتاجين رد منك بنفسك (مسجلين في %s)." % (len(skipped_entries), SKIPPED_FILE))
 
     state["replied_ids"] = list(replied_ids)[-MAX_STORED:]
     state["replied_commenters"] = list(replied_commenters)[-MAX_STORED:]
